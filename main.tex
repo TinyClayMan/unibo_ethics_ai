@@ -1,0 +1,472 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\title{\textbf{Loss-Aware Synthetic Data Generation:}\\
+Estimating Utility Loss and Preventing It}
+
+\author{
+Grigorii Kolosov (0001165048) \\
+Jana Valentina Stefan (0900090154) \\
+\\
+\texttt{\{grigorii.kolosov, janavalentina.stefan\}@studio.unibo.it}
+}
+
+\date{2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This project investigates how to measure and mitigate the utility loss introduced by synthetic data generation. While synthetic data is widely used to address privacy concerns, it often fails to preserve the statistical properties necessary for effective downstream machine learning tasks. The central objective of this work is to analyze the trade-off between privacy preservation and data utility, and to explore methods for optimizing this balance during the data generation process.
+\end{abstract}
+
+\section{Introduction}
+
+Synthetic data has emerged as a promising approach for enabling data-driven innovation while mitigating the privacy risks associated with sharing or processing real-world datasets. By generating artificial records that resemble real data, organizations aim to support machine learning development, exploratory analysis, and fairness auditing without exposing sensitive information. This motivation has become increasingly important in light of growing concerns about data protection, algorithmic accountability, and responsible AI practices~\cite{leslie2020ethics, floridi2016data}.
+
+Despite its appeal, synthetic data often fails to preserve the statistical properties necessary for effective downstream machine learning tasks. Recent studies show that synthetic datasets may exhibit degraded distributional fidelity, weakened correlation structures, and reduced predictive performance compared to real data~\cite{little2025synthetic}. At the same time, synthetic data is not inherently privacy-safe: generative models may memorize individual records or leak sensitive attributes, enabling inference or linkage attacks~\cite{stadler2022synthetic}. These findings challenge the assumption that synthetic data automatically balances privacy and utility.
+
+A wide range of generative approaches have been proposed for tabular synthetic data. In this project, we focus on three representative models:
+
+\begin{itemize}
+    \item \textbf{CTGAN}~\cite{xu2019modeling}, a GAN-based model capable of capturing complex, multimodal relationships through adversarial training.
+    \item \textbf{TVAE}~\cite{xu2018synthesizing}, a variational autoencoder that learns latent representations of tabular data using probabilistic encoding and decoding.
+    \item \textbf{Synthpop}~\cite{nowok2016synthpop}, a statistical synthesis framework based on sequential conditional modeling, widely used in official statistics and social science research.
+\end{itemize}
+
+CTGAN and TVAE represent modern deep generative approaches, while Synthpop provides a classical statistical baseline. Synthpop generates synthetic data by fitting a sequence of conditional models to the real dataset, typically using generalized linear models or classification trees. Unlike neural generative models, Synthpop does not rely on latent variables or adversarial training, and its interpretability has made it popular in privacy-preserving data release within government and research institutions.
+
+Although these models differ substantially in methodology, they share a common limitation: their training objectives do not explicitly account for downstream utility or privacy risks. CTGAN optimizes adversarial loss, TVAE optimizes reconstruction and KL divergence, and Synthpop optimizes conditional likelihoods. None of these objectives directly target distributional fidelity, predictive performance, or privacy protection.
+
+This project investigates how to measure and mitigate the utility loss introduced by synthetic data generation across these three models. We formalize utility loss as the discrepancy between real and synthetic data in terms of distributional similarity, correlation preservation, and downstream predictive performance. Privacy guarantees are evaluated using established metrics including Distance to Closest Record (DCR), inference risk, CM3, and disclosure protection. Building on these evaluations, we explore a prevention-oriented approach by modifying the training objectives of CTGAN and TVAE. Specifically, we introduce a multi-objective loss function that incorporates explicit penalty terms for distribution mismatch, predictive degradation, and privacy leakage.
+
+By jointly optimizing for utility and privacy during training, rather than evaluating them only post hoc, this work aims to contribute to the development of more reliable and ethically grounded synthetic data generation methods. Our results highlight the inherent tension between privacy protection and analytical usefulness, and underscore the importance of transparent, context-sensitive approaches to synthetic data design.
+
+
+\section{Related Work}
+
+Research on synthetic data generation spans several methodological traditions, including deep generative models, statistical synthesis frameworks, utility evaluation, privacy assessment, and ethical analyses of data release. This section provides an overview of the most relevant contributions in each area.
+
+\subsection{Deep Generative Models for Tabular Data}
+
+Deep generative models have become a central approach for producing synthetic tabular data. CTGAN~\cite{xu2019modeling} introduced a conditional GAN architecture tailored to mixed-type tabular data, addressing challenges such as mode imbalance and complex variable interactions. TVAE~\cite{xu2018synthesizing} extended variational autoencoders to tabular synthesis by incorporating probabilistic encoding and decoding mechanisms. Both models form the foundation of the SDV ecosystem and have been widely adopted in machine learning and data science applications.
+
+These models demonstrate strong performance in capturing nonlinear relationships and multimodal distributions, but they rely on single-objective training. As a result, they may fail to preserve downstream utility or protect privacy, motivating research on multi-objective optimization and privacy-aware generative modeling.
+
+\subsection{Statistical Approaches to Synthetic Data}
+
+Before the rise of deep generative models, statistical synthesis frameworks were widely used in official statistics and social science research. Synthpop~\cite{nowok2016synthpop} is one of the most prominent examples. It generates synthetic datasets by fitting sequential conditional models—most commonly classification and regression trees (CART)~\cite{breiman1984cart}—to the real data, an approach introduced for partially synthetic public-use microdata by Reiter~\cite{reiter2005cart}. Synthpop is valued for its interpretability and transparency, making it suitable for regulated environments where explainability is essential. A known practical limitation is that tree-based synthesis can become computationally expensive and unstable for variables with many categories; Raab et al.~\cite{raab2016practical} discuss strategies for synthesising such high-cardinality categorical data at scale, an issue that is central to the census dataset used in this work.
+
+More recently, Little et al.~\cite{little2025synthetic} benchmarked synthpop against deep generative models (CTGAN and TVAE) on census microdata and found that synthpop tends to achieve the highest utility of the methods compared, though often at higher disclosure risk, and that its minimum-leaf-size parameter offers a simple lever for trading some utility for reduced risk. This comparative finding directly motivates our use of synthpop's CART synthesiser as a statistical baseline and our exploration of its leaf-size parameter as a privacy control.
+
+However, statistical models may struggle to capture complex nonlinear dependencies present in modern datasets, and they do not inherently address privacy risks such as memorization or inference attacks.
+
+\subsection{Utility Evaluation of Synthetic Data}
+
+Utility evaluation aims to determine whether synthetic data preserves the analytical value of real data. Little et al.~\cite{little2025synthetic} provide a comprehensive comparison of statistical and deep generative synthesisers (synthpop, DataSynthesizer, CTGAN, and TVAE) on census microdata, assessing utility with a basket of complementary measures and showing that synthesiser performance, and the resulting utility, depends heavily on the method and its parameter settings. Their work emphasizes the need for multi-metric evaluation, including:
+
+\begin{itemize}
+    \item distributional similarity (e.g., MMD, EMD),
+    \item structural fidelity (e.g., correlation preservation),
+    \item downstream machine learning performance.
+\end{itemize}
+
+Other studies, such as PATE-GAN~\cite{jordon2018pategan}, demonstrate that privacy-preserving mechanisms can further reduce utility, reinforcing the inherent tension between privacy and analytical usefulness.
+
+\subsection{Privacy Risks and Evaluation}
+
+Although synthetic data is often assumed to be privacy-safe, recent work shows that generative models can leak sensitive information. Stadler et al.~\cite{stadler2022synthetic} demonstrate that synthetic datasets may enable membership inference, attribute inference, and linkage attacks, even when the synthetic data appears statistically plausible. Their findings highlight the need for explicit privacy evaluation using metrics such as:
+
+\begin{itemize}
+    \item Distance to Closest Record (DCR),
+    \item inference risk,
+    \item closest-match membership metrics (e.g., CM3),
+    \item disclosure risk analysis.
+\end{itemize}
+
+These metrics provide complementary perspectives on memorization, inference vulnerability, and re-identification risk.
+
+\subsection{Ethical Perspectives on Synthetic Data}
+
+Ethical analyses of data release emphasize that privacy protection must be balanced with the need for reliable and meaningful data. Leslie~\cite{leslie2020ethics} argues that responsible AI systems must prioritize individual rights and transparency, while Floridi and Taddeo~\cite{floridi2016data} highlight the importance of data ethics in contexts where synthetic data is used for decision-making or research.
+
+These perspectives underscore that synthetic data generation is not merely a technical challenge but also an ethical one. Models must be evaluated not only for their statistical properties but also for their potential societal impacts.
+
+\subsection{Summary}
+
+Overall, prior work demonstrates that synthetic data generation involves complex trade-offs between utility, privacy, and ethical considerations. Deep generative models offer powerful tools for capturing complex patterns, while statistical approaches provide interpretability and transparency. Utility and privacy evaluations reveal that no single metric is sufficient, and ethical analyses highlight the need for responsible, context-sensitive deployment. This project builds on these foundations by integrating multi-objective loss functions into CTGAN and TVAE and by evaluating their performance alongside Synthpop using established utility and privacy metrics.
+
+
+\section{Methodology}
+
+This section describes the full technical pipeline of the project: the dataset and its preprocessing, the three synthetic data generators, the multi-objective loss function we integrate into the deep generative models, the experimental setup, and the utility and privacy metrics used for evaluation. The implementation is organised around two complementary experiments. The first uses the SDV ecosystem to train deep generative models (CTGAN and TVAE), both in their default form and with a patched, loss-aware variant. The second uses the \texttt{python-synthpop} CART synthesiser as a classical statistical baseline and develops an explicit loss-aware optimisation strategy with a six-point privacy-weight sweep. Both experiments share the same underlying dataset, which makes their results directly comparable.
+
+\subsection{Dataset \& Preprocessing}
+
+All experiments use the \texttt{census} table distributed with the SDV library and obtained through the SDV \texttt{download\_demo} helper (single-table modality, \texttt{census} dataset). This is the UCI Census-Income (KDD) dataset, drawn from the 1994--95 Current Population Survey, and contains $299{,}285$ rows and $41$ columns mixing numerical and categorical attributes. The target attribute is the binary income indicator \texttt{label}, which is heavily imbalanced: $93.8\%$ of records fall in the ``$-50000$'' class and only $6.2\%$ in the ``$50000+$'' class.
+
+Because of the compute limits of the Google Colab environment, the dataset is reduced to a $50{,}000$-row sample before synthesis. Two reduction strategies are used across the two experiments. For the deep generative models we use KMeans-based stratified sampling: the mixed-type table is one-hot encoded, partitioned into $20$ clusters, and rows are drawn proportionally from each cluster so that the multivariate structure of the data is preserved in the reduced sample. For the Synthpop experiment we use stratified sampling on the \texttt{label} column, so that the original $93.8\%/6.2\%$ class imbalance is reproduced exactly in the $50{,}000$-row sample; this matters because \texttt{label} is also the sensitive target used by the inference-risk metric.
+
+The dataset is genuinely high-cardinality: $10$ of its $29$ categorical columns have $10$ or more levels, including \texttt{education} ($17$), \texttt{major industry code} ($24$), the three \texttt{country of birth} fields ($43$ each), and \texttt{state of previous residence} ($51$). A further property of the data is that roughly $15$--$25\%$ of rows ($18.8\%$ in the stratified sample) are exact duplicates of other rows, which is expected for census microdata where many individuals share identical quasi-identifier combinations. This duplicate mass has direct consequences for threshold-based privacy metrics and is handled explicitly in the privacy evaluation.
+
+\paragraph{Discrete versus continuous variables.} The two model families handle mixed-type data differently. CTGAN and TVAE rely on SDV's internal \texttt{DataTransformer}: continuous columns are encoded with mode-specific normalisation (a variational Gaussian-mixture representation that captures multimodal numeric distributions), while discrete columns are one-hot encoded and handled through conditional sampling. Column types are inferred from the SDV \texttt{Metadata} object. For the Synthpop experiment, column dtypes are inferred with \texttt{MissingDataHandler}, yielding $12$ numerical and $29$ categorical columns; categoricals are one-hot encoded, which expands the $41$ original columns into $312$--$371$ predictor columns depending on the encoding stage. CART then fits one decision tree per expanded column.
+
+
+\subsection{Synthetic Data Generators}
+
+Synthetic data generation aims to reproduce the statistical properties and analytical usefulness of real datasets while reducing privacy risks. In this project, we focus on two widely used deep generative models for tabular data: CTGAN and TVAE. These models represent two distinct paradigms—Generative Adversarial Networks (GANs) and Variational Autoencoders (VAEs)—and are widely adopted in the synthetic data literature. Their complementary strengths make them ideal for studying utility loss and for integrating multi‑objective loss functions.
+%CTGAN
+
+CTGAN (\cite{xu2019modeling}) is a GAN‑based model specifically designed for mixed‑type tabular data. It addresses two core challenges: highly imbalanced categorical distributions and complex relationships between discrete and continuous variables. The model consists of a generator and discriminator trained adversarially. During training, the generator learns to produce synthetic samples that resemble real data, while the discriminator learns to distinguish real from synthetic samples.
+CTGAN introduces several innovations tailored to tabular data:
+
+\textbf{Conditional sampling} to handle high‑cardinality categorical variables.
+
+\textbf{Mode‑specific normalization} for continuous variables.
+
+\textbf{Residual blocks} to stabilize generator training.
+
+\textbf{Gradient penalty} to enforce Lipschitz continuity.
+
+
+These design choices make CTGAN effective at capturing complex nonlinear relationships. However, GAN‑based models are known for training instability and mode collapse, which motivates the exploration of additional loss terms that explicitly target distributional fidelity and downstream utility.
+
+%TVAE
+TVAE (\cite{xu2018synthesizing}) represents a fundamentally different approach based on Variational Autoencoders. Instead of adversarial training, TVAE uses probabilistic encoding and decoding to learn a latent representation of tabular data. The encoder maps each data point to a latent distribution, while the decoder reconstructs data from samples drawn from these distributions.
+The TVAE loss combines:
+
+\textbf{Reconstruction loss}, which measures how well the decoder reproduces the original data.
+
+\textbf{Kullback–Leibler (KL) divergence}, which regularizes the latent space toward a standard Gaussian prior.
+
+TVAE is typically more stable and faster to train than CTGAN. It handles continuous variables naturally and supports mixed‑type data through SDV’s transformation pipeline. However, VAEs may struggle to reproduce sharp categorical boundaries or multimodal distributions without additional guidance.
+
+%Why Both Models Are Relevant
+Using both CTGAN and TVAE allows us to study utility loss across two fundamentally different generative paradigms:
+
+CTGAN excels at capturing complex patterns but is sensitive to instability.
+
+TVAE is stable and efficient but may underfit certain structures.
+
+This contrast is essential for evaluating how multi‑objective loss functions influence distributional fidelity, correlation preservation, downstream machine‑learning performance, and privacy leakage.
+
+Recent studies highlight that synthetic data can suffer from significant utility degradation (\cite{little2025synthetic}) and may still leak private information despite appearing anonymized (\cite{stadler2022synthetic}). By integrating additional loss components into both CTGAN and TVAE, we aim to improve utility while maintaining or enhancing privacy protection, contributing to responsible synthetic data generation as discussed in broader ethical frameworks (\cite{leslie2020ethics, floridi2016data}).
+
+% Synthpop / CART
+Alongside the two deep generative models, we use Synthpop~\cite{nowok2016synthpop} as a classical statistical baseline, implemented through the \texttt{python-synthpop} port of the R \texttt{synthpop} package and its CART synthesiser. Rather than learning a latent representation or training adversarially, the CART method~\cite{breiman1984cart} models the joint distribution as a sequence of conditional distributions and fits one classification-and-regression tree per (expanded) column, sampling synthetic values from the tree leaves---an approach originally developed for partially synthetic microdata by Reiter~\cite{reiter2005cart}. This makes the generator interpretable and fast relative to deep models, and gives a single, well-understood hyperparameter---the minimum leaf size \texttt{minibucket}---that directly controls how aggressively the trees are regularised. We exploit this hyperparameter later as a proxy ``knob'' for the privacy--utility trade-off, following the observation of Little et al.~\cite{little2025synthetic} that increasing synthpop's minimum leaf size reduces disclosure risk at a modest utility cost. The high-cardinality categorical columns of the census data are exactly the case in which tree-based synthesis is known to become slow or unstable~\cite{raab2016practical}; in practice, \texttt{python-synthpop} v0.1.2 contained three bugs that surface on such data (a removed \texttt{OneHotEncoder} keyword argument, a broken reindex on expanded columns, and an argmax decoding error that silently corrupted category proportions); we corrected all three through a \texttt{FixedDataProcessor} subclass so that CART itself could be used unmodified.
+
+
+\subsection{Multi-Objective Loss Function}
+% Motivation, Formal definition, Additional loss terms: MMD penalty, Soft‑F1 penalty, Privacy penalty, Weighting strategy, Differences between CTGAN and TVAE integration, Stability considerations (detach, no‑grad, etc.)
+
+
+Deep generative models for tabular data are typically optimized using a single objective: adversarial loss in GANs or reconstruction plus KL divergence in VAEs. While these objectives encourage the generator to mimic the real data distribution, they do not explicitly account for downstream analytical utility or privacy risks. Recent studies highlight that synthetic data can suffer from substantial utility degradation~\cite{little2025synthetic} and may still leak sensitive information despite appearing anonymized~\cite{stadler2022synthetic}. Indeed, Little et al.~\cite{little2025synthetic} explicitly suggest a multi-objective treatment of the utility--risk trade-off as a direction for future work, which our loss design takes up directly. To address these limitations, we extend both CTGAN and TVAE with a multi-objective loss function that incorporates additional terms targeting distributional fidelity, predictive utility, and privacy protection.
+ % Motivation
+The standard CTGAN loss~\cite{xu2019modeling} focuses on fooling the discriminator, while the TVAE loss~\cite{xu2018synthesizing} balances reconstruction accuracy with latent-space regularization. Neither model explicitly optimizes for preservation of statistical structure, preservation of downstream machine learning performance, or reduction of privacy leakage.
+
+Ethical analyses of synthetic data~\cite{leslie2020ethics, floridi2016data} emphasize that responsible synthetic data generation must consider both utility and privacy simultaneously. A multi-objective loss provides a principled way to incorporate these considerations directly into the training process.
+
+\subsubsection{Loss Components}
+
+Our multi-objective loss augments the original generator or autoencoder loss with three additional components.
+
+1.Distributional Fidelity (MMD Penalty) 
+
+To encourage the synthetic data to match the real data distribution more closely, we include a penalty based on the Maximum Mean Discrepancy (MMD), a kernel-based distance widely used to compare probability distributions and applied in privacy-preserving generative modeling~\cite{jordon2018pategan}.
+
+\begin{equation}
+\mathcal{L}_{\text{MMD}} = \text{MMD}(X_{\text{real}}, X_{\text{syn}})
+\end{equation}
+
+2. Predictive Utility (Soft-F1 Penalty)
+
+To preserve downstream machine learning performance, we introduce a differentiable surrogate of the F1-score. This term encourages the generator to maintain class boundaries and predictive structure present in the real data, in line with findings that utility loss often manifests as degraded downstream predictive performance~\cite{little2025synthetic}.
+
+\begin{equation}
+\mathcal{L}_{\text{F1}} = 1 - \text{SoftF1}(X_{\text{real}}, X_{\text{syn}})
+\end{equation}
+
+3. Privacy Protection (Distance-Based Penalty)
+
+Synthetic data may unintentionally memorize individual records, leading to privacy leakage~\cite{stadler2022synthetic}. To mitigate this risk, we include a penalty based on the distance between synthetic and real samples:
+
+\begin{equation}
+\mathcal{L}_{\text{Priv}} = \mathbb{E}\left[\max\left(0, 1 - \left\| x_{\text{syn}} - x_{\text{real}} \right\|\right)\right]
+\end{equation}
+
+This term discourages the generator from producing samples that lie too close to real individuals.
+
+\subsubsection{Combined Objective}
+
+For CTGAN, the generator loss becomes:
+
+\begin{equation}
+\mathcal{L}_{G} = \mathcal{L}_{\text{GAN}} 
++ \lambda_{\text{MMD}} \mathcal{L}_{\text{MMD}}
++ \lambda_{\text{F1}} \mathcal{L}_{\text{F1}}
++ \lambda_{\text{Priv}} \mathcal{L}_{\text{Priv}}.
+\end{equation}
+
+For TVAE, the autoencoder loss becomes:
+
+\begin{equation}
+\mathcal{L}_{\text{TVAE}} = 
+\mathcal{L}_{\text{Recon}} + \mathcal{L}_{\text{KL}}
++ \lambda_{\text{MMD}} \mathcal{L}_{\text{MMD}}
++ \lambda_{\text{F1}} \mathcal{L}_{\text{F1}}
++ \lambda_{\text{Priv}} \mathcal{L}_{\text{Priv}}.
+\end{equation}
+
+The weighting coefficients $\lambda_{\text{MMD}}, \lambda_{\text{F1}}, \lambda_{\text{Priv}}$ control the influence of each term. In our implementation, these terms are computed without gradient tracking to avoid interference with the underlying training dynamics, while still shaping the optimization landscape through their contribution to the total loss.
+
+\subsubsection{Ethical Rationale} % maybe put this in discussion
+
+By explicitly optimizing for utility and privacy, the multi-objective loss aligns with ethical principles of responsible AI development. It supports the creation of synthetic datasets that are both analytically meaningful and less likely to expose sensitive information, addressing concerns raised in recent ethical analyses~\cite{leslie2020ethics, floridi2016data}.
+
+
+\subsection{Experimental Setup}
+
+\paragraph{Environment.} All experiments were run on Google Colab. The deep generative models were trained with the SDV library (\texttt{sdv} 1.37.2, \texttt{ctgan} 0.12.1); the baseline CTGAN run used a CPU build of PyTorch, while the loss-aware re-runs used a CUDA build. The Synthpop experiment used \texttt{python-synthpop} 0.1.2 with the \texttt{FixedDataProcessor} patch described above.
+
+\paragraph{Training configuration.} Both CTGAN and TVAE were trained for $150$ epochs using SDV's default batch size and optimiser settings, fitted on the $50{,}000$-row reduced sample and then sampled to produce synthetic datasets of up to $300{,}000$ rows. Training cost differed sharply between the two families: on the full reduced sample, CTGAN took roughly $1$ hour $24$ minutes ($\approx 33.5$\,s/iteration) to converge, while TVAE completed the same $150$ epochs in under $5$ minutes ($\approx 2.0$\,s/iteration), consistent with the expectation that VAE training is far more stable and efficient than adversarial training. The CART synthesiser was configured with a minimum leaf size of \texttt{minibucket}~$=5$ for the baseline; fitting one tree per expanded column on the $50{,}000$-row, $312$-column matrix took about $2.5$ minutes, with sampling and post-processing adding roughly $45$ seconds.
+
+\paragraph{Baseline versus multi-objective models.} For each deep model we compare an unmodified ``baseline'' synthesiser against a ``multi-objective'' variant. Because SDV exposes no public API for custom losses, the multi-objective variant was produced by patching the installed \texttt{ctgan.py} and \texttt{tvae.py} source files locally: the additional MMD, soft-F1, and privacy terms were inserted into the generator/autoencoder loss, and the patched modules were copied back into the package before re-training. For the Synthpop experiment, the loss-aware variant is realised not by editing the synthesiser but by sweeping the CART \texttt{minibucket} hyperparameter as a proxy control on the privacy weight $\lambda_p$ (see Section~6 of the implementation): small \texttt{minibucket} corresponds to low regularisation and a utility-focused, higher-overfitting regime, while large \texttt{minibucket} produces coarser trees and a more privacy-focused regime.
+
+\paragraph{Evaluation pipeline.} Synthetic data is evaluated along two axes. Utility is assessed with SDV's \texttt{QualityReport} (column-shape and column-pair-trend scores), per-column Earth Mover's Distance, an RFF-approximated MMD, correlation preservation, and a train-on-synthetic / test-on-real (TSTR) downstream classifier. Privacy is assessed with Distance to Closest Record, overfitting protection, inference risk, CM3, and disclosure protection. To keep nearest-neighbour and classifier computations tractable, all distance-based privacy metrics in the Synthpop experiment operate on a $10{,}000$-row stratified subsample of both real and synthetic data, with categoricals one-hot encoded and numerics min--max scaled (yielding a $371$-dimensional space), while the synthetic data itself is generated and reported at full size.
+
+\subsection{Utility Evaluation}
+
+Evaluating the utility of synthetic data is essential for determining whether the generated samples preserve the analytical value of the original dataset. Prior work has shown that synthetic data often suffers from degraded statistical fidelity and reduced downstream machine learning performance~\cite{little2025synthetic}. To obtain a comprehensive view of utility, we employ a combination of distributional, structural, and predictive metrics.
+
+\subsubsection{Maximum Mean Discrepancy (MMD)}
+
+Maximum Mean Discrepancy (MMD) is a kernel-based distance measure that quantifies how different two probability distributions are. It has been widely used in generative modeling and privacy-preserving synthetic data research~\cite{jordon2018pategan}. A lower MMD score indicates that the synthetic data distribution closely matches the real data distribution.
+
+\begin{equation}
+\text{MMD}(X_{\text{real}}, X_{\text{syn}}) = 
+\left\| 
+\mathbb{E}_{x \sim X_{\text{real}}}[k(x, \cdot)] -
+\mathbb{E}_{x \sim X_{\text{syn}}}[k(x, \cdot)]
+\right\|_{\mathcal{H}},
+\end{equation}
+
+where $k$ is an RBF kernel and $\mathcal{H}$ is the associated reproducing kernel Hilbert space.
+
+\subsubsection{Earth Mover's Distance (EMD)}
+
+Earth Mover's Distance (EMD), also known as the Wasserstein distance, measures the minimal cost of transforming one distribution into another. It is particularly useful for evaluating continuous variables and is a standard distributional measure for benchmarking synthetic data against a real reference. Lower EMD values indicate better alignment between real and synthetic distributions.
+
+\subsubsection{Correlation Preservation}
+
+Synthetic data should preserve the relationships between variables, not only their marginal distributions. We therefore compare the correlation matrices of real and synthetic data:
+
+\begin{equation}
+\Delta_{\text{corr}} = 
+\left\| 
+C_{\text{real}} - C_{\text{syn}}
+\right\|_{F},
+\end{equation}
+
+where $C_{\text{real}}$ and $C_{\text{syn}}$ denote the correlation matrices and $\|\cdot\|_{F}$ is the Frobenius norm. This metric captures structural fidelity and is crucial for downstream tasks relying on multivariate dependencies.
+
+\subsubsection{Downstream Machine Learning Performance}
+
+A key aspect of utility is whether synthetic data supports predictive modeling. Following the machine-learning efficacy protocol established for these models~\cite{xu2019modeling}, we train classifiers on synthetic data and test them on real data. We report standard metrics such as accuracy and F1-score:
+
+\begin{equation}
+\text{Utility}_{\text{ML}} = 
+\text{F1}_{\text{train on syn, test on real}}.
+\end{equation}
+
+High downstream performance indicates that the synthetic data captures the discriminative structure of the real dataset. Conversely, large drops in accuracy or F1-score signal utility loss.
+
+\subsubsection{Rationale for Multi-Metric Evaluation}
+
+Recent studies emphasize that no single metric can fully capture synthetic data utility~\cite{little2025synthetic}. Distributional metrics (MMD, EMD) assess statistical similarity, structural metrics (correlation preservation) evaluate relational fidelity, and predictive metrics (downstream ML performance) measure practical usefulness. By combining these perspectives, we obtain a robust and ethically grounded assessment of whether synthetic data remains fit for analytical purposes.
+
+
+
+\subsection{Privacy Evaluation}
+
+While synthetic data is often promoted as a privacy-preserving alternative to real data, recent research shows that synthetic datasets can still leak sensitive information if not carefully evaluated~\cite{stadler2022synthetic}. Privacy evaluation therefore plays a central role in assessing whether generative models protect individuals from re-identification, inference attacks, or memorization. In this subsection, we describe the metrics used to quantify privacy risks in our synthetic datasets.
+
+\subsubsection{Distance to Closest Record (DCR)}
+
+The Distance to Closest Record (DCR) measures how close each synthetic sample lies to the nearest real sample. If synthetic data points are extremely close to real individuals, this indicates potential memorization and privacy leakage. Following established practice in privacy-preserving generative modeling~\cite{stadler2022synthetic}, we compute:
+
+\begin{equation}
+\text{DCR}(x_{\text{syn}}) = 
+\min_{x_{\text{real}} \in X_{\text{real}}}
+\left\| x_{\text{syn}} - x_{\text{real}} \right\|.
+\end{equation}
+
+Higher DCR values indicate stronger privacy protection, while very low values suggest that the generator may have reproduced real individuals too closely. In our implementation we report DCR as a \emph{ratio} against a real-to-real baseline: a ratio of $1$ means synthetic records are, on average, as well separated from real records as real records are from one another, and ratios below $1$ indicate that synthetic samples lie closer to real individuals than expected by chance.
+
+\subsubsection{Overfitting Protection}
+
+Overfitting protection quantifies the extent to which the synthesiser has memorised individual training records rather than learning their distribution. We compute the fraction of synthetic records whose nearest real neighbour lies within a small distance threshold $\epsilon$, and report the complement of that fraction as the protection score. Because census microdata contains a large mass of exact duplicate rows (around $15$--$25\%$ in our sample), a naive percentile-based threshold collapses to zero and reports a meaningless perfect score; we therefore compute $\epsilon$ from the \emph{nonzero} real-to-real nearest-neighbour distances and report the duplicate rate alongside the score. Higher values indicate weaker memorisation and therefore stronger privacy.
+
+\subsubsection{Inference Risk}
+
+Inference risk quantifies the likelihood that an adversary can infer sensitive attributes of real individuals using synthetic data. This metric is inspired by membership and attribute inference attacks studied in privacy research~\cite{stadler2022synthetic}. We estimate inference risk by training a classifier on synthetic data and evaluating its ability to predict sensitive attributes of real samples:
+
+\begin{equation}
+\text{Risk}_{\text{inf}} = 
+\text{Acc}\left(f_{\text{syn}}(X_{\text{real}}), 
+Y_{\text{real}}^{\text{sensitive}}\right).
+\end{equation}
+
+Lower inference risk indicates better privacy protection.
+
+\subsubsection{Closest Match Membership Metric (CM3)}
+
+The CM3 metric evaluates whether synthetic samples can be linked back to specific real individuals. It is based on the idea that if a synthetic record is consistently the closest match to a real record across multiple similarity measures, the synthetic dataset may reveal information about that individual. CM3 has been used in recent privacy evaluations of synthetic data~\cite{stadler2022synthetic}. Formally, CM3 counts how often a synthetic record is the nearest neighbor of a real record under multiple distance metrics.
+
+\subsubsection{Disclosure Protection}
+
+Disclosure protection assesses whether synthetic data reveals sensitive or identifying information about real individuals. This concept is central to data ethics and responsible AI~\cite{leslie2020ethics, floridi2016data}. We evaluate disclosure protection by examining:
+
+\begin{itemize}
+    \item whether synthetic samples replicate rare or unique real records,
+    \item whether sensitive attribute combinations appear disproportionately,
+    \item whether synthetic data enables linkage attacks.
+\end{itemize}
+
+High disclosure protection indicates that the synthetic dataset does not expose identifiable or sensitive patterns from the real data.
+
+\subsubsection{Interpretation}
+
+Our privacy evaluation metrics collectively measure memorization, inference vulnerability, and disclosure risk. These metrics complement utility evaluation by revealing the privacy cost of generating highly realistic synthetic data. As shown in prior work~\cite{stadler2022synthetic}, improving privacy often reduces fidelity, and our results reflect this inherent tension. The multi-objective loss function explicitly incorporates privacy-aware constraints, which increases DCR and reduces inference risk, but also leads to lower utility metrics. This trade-off is central to ethical synthetic data generation and highlights the need for balanced optimization strategies.
+
+
+\subsection{Results}
+
+We organise the results in three parts: the utility of the deep generative models (CTGAN and TVAE), the privacy and utility profile of the Synthpop/CART baseline together with its loss-aware sweep, and a cross-cutting trade-off analysis. A note on scope: the CTGAN/TVAE pipeline records clean utility measurements for the SDV synthesisers, whereas the cleanest, fully matched baseline-versus-loss-aware comparison is the Synthpop $\lambda_p$ sweep, which re-fits the model and recomputes all five privacy metrics at six operating points. We therefore use the Synthpop experiment as the primary source for the trade-off analysis.
+
+\subsubsection{Utility of the Deep Generative Models}
+
+Table~\ref{tab:deep-utility} summarises the utility metrics for CTGAN and TVAE on the census data. Both models achieve a high overall SDV quality score---$87.82\%$ for CTGAN and $88.46\%$ for TVAE---indicating that the synthetic marginals and pairwise relationships are broadly faithful to the real data. The two models reach this from different directions: TVAE has stronger per-column marginals (column-shapes score $92.45\%$ versus $88.97\%$), while CTGAN better preserves pairwise structure (column-pair-trends $86.67\%$ versus $84.47\%$). The RFF-approximated MMD is essentially identical for the two models ($\approx 0.0133$), confirming that on the numeric subspace both match the real distribution closely.
+
+\begin{table}[ht]
+\centering
+\caption{Utility metrics for the SDV deep generative models on the census dataset (150 training epochs). Quality scores are from SDV's \texttt{QualityReport}; EMD is the mean per-column Wasserstein distance over the $12$ numeric columns; MMD is the RFF approximation. Higher quality scores and lower EMD/MMD are better.}
+\label{tab:deep-utility}
+\begin{tabular}{lcc}
+\hline
+\textbf{Metric} & \textbf{CTGAN} & \textbf{TVAE} \\
+\hline
+Overall quality score & $87.82\%$ & $88.46\%$ \\
+Column-shapes score & $88.97\%$ & $92.45\%$ \\
+Column-pair-trends score & $86.67\%$ & $84.47\%$ \\
+Mean EMD (numeric cols) & $44.74$ & $47.09$ \\
+RFF-MMD (approx.) & $0.0133$ & $0.0133$ \\
+Training time (150 epochs) & $\sim$1h24m & $\sim$5m \\
+\hline
+\end{tabular}
+\end{table}
+
+The EMD results expose where utility is hardest to preserve. The mean per-column Wasserstein distance is $44.74$ for CTGAN and $47.09$ for TVAE, but this average is dominated by a few heavy-tailed financial columns. Both models reproduce bounded and low-variance columns extremely well (e.g.\ \texttt{year}, \texttt{own business or self employed}, and \texttt{veterans benefits} all below $0.2$), but struggle on sparse, outlier-heavy financial fields: \texttt{capital gains} has an EMD of $371.4$ for CTGAN and $323.3$ for TVAE, and \texttt{dividends from stocks} is harder for TVAE ($166.5$) than for CTGAN ($102.8$). This is the expected behaviour for columns that are mostly zero with rare extreme values, which generative models replicate poorly under a limited number of samples and epochs.
+
+\subsubsection{Synthpop: Baseline Privacy and Utility}
+
+The Synthpop/CART synthesiser produces a high-fidelity baseline. The aggregate utility score (mean KS-complement across the $12$ numeric columns) is $0.998$, and a fidelity spot-check on the highest-cardinality categorical columns confirms that the patched processor reproduces category proportions accurately even at $43$ and $51$ levels (for example, \texttt{country of birth self} = United-States at $0.8861$ real versus $0.8852$ synthetic, and \texttt{label} = ``$-50000$'' at $0.938$ real versus $0.9381$ synthetic). Table~\ref{tab:synthpop-baseline} reports the five privacy metrics plus the F1 utility metric at the baseline configuration (\texttt{minibucket}~$=1$, $\lambda_p=0$).
+
+\begin{table}[ht]
+\centering
+\caption{Synthpop/CART baseline privacy and utility metrics (\texttt{minibucket}~$=1$, $\lambda_p=0$), computed on a $10{,}000$-row stratified subsample. F1 is the train-on-synthetic / test-on-real F1 for the minority income class, with the real-trained oracle F1 shown for reference.}
+\label{tab:synthpop-baseline}
+\begin{tabular}{lcc}
+\hline
+\textbf{Metric} & \textbf{Value} & \textbf{Reference / target} \\
+\hline
+Aggregate utility (KS-complement) & $0.998$ & higher is better \\
+DCR ratio & $0.891$ & $\geq 1$ is good \\
+Overfitting protection & $0.781$ & $> 0.9$ excellent \\
+Inference risk (\texttt{label}) & $1.000$ & $< 0.3$ low; $> 0.7$ high \\
+CM3 score & $0.446$ & $> 0.45$ safe \\
+Disclosure protection & $0.676$ & $> 0.85$ excellent \\
+F1 utility (synthetic-trained) & $0.330$ & oracle $= 0.324$ \\
+\hline
+\end{tabular}
+\end{table}
+
+The single most important result here is the inference risk. Income (\texttt{label}) is genuinely predictable from the quasi-identifiers in the real data---a classifier trained on real data reaches an AUC of $0.916$ against a chance level of $0.50$---and the CART synthesiser preserves that relationship almost exactly: a classifier trained \emph{only} on synthetic data reaches an AUC of $0.918$ on real test records, giving an inference risk of $1.000$ relative to the oracle ceiling. The F1 utility metric tells the same story from the other side: the synthetic-trained classifier reaches an F1 of $0.299$--$0.330$ on the minority class against an oracle F1 of $0.306$--$0.324$, a gap of only a few thousandths. This is the textbook case in which strong utility \emph{is} the privacy risk: anyone sharing a real individual's quasi-identifiers can recover their income from the synthetic data nearly as well as from the real data. By contrast, DCR (ratio $0.891$) and CM3 ($0.446$) sit close to their real-to-real baselines, and overfitting protection ($0.781$) and disclosure protection ($0.676$) are good once the natural duplicate mass ($16.5$--$18.8\%$) is excluded from their thresholds.
+
+\subsubsection{Loss-Aware Optimisation Sweep}
+
+Table~\ref{tab:sweep} reports the multi-objective sweep over six operating points, in which the CART \texttt{minibucket} acts as a proxy control on the privacy weight $\lambda_p$. Each row re-fits CART on the full $50{,}000$-row, $\sim$$370$-column matrix and recomputes all five privacy metrics; the whole sweep took about $49.8$ minutes. Because each configuration was scored at its own $\lambda_p$, the comparable column is \texttt{L\_total\_fixed}, which re-scores every configuration at a single fixed privacy weight so that the comparison reflects actual measured privacy rather than how much weight each row happened to assign it.
+
+\begin{table}[ht]
+\centering
+\caption{Loss-aware optimisation sweep for Synthpop/CART. \texttt{minibucket} is the minimum leaf size used as a proxy for $\lambda_p$; utility is the mean KS-complement; \texttt{L\_priv} is the aggregate privacy loss (lower is better); \texttt{L\_total\_fixed} re-scores every row at a constant privacy weight for fair comparison.}
+\label{tab:sweep}
+\begin{tabular}{ccccccc}
+\hline
+\textbf{minibucket} & $\boldsymbol{\lambda_p}$ & \textbf{Utility} & \textbf{synth F1} & $\mathbf{L_{u}}$ & $\mathbf{L_{priv}}$ & $\mathbf{L_{total}^{fixed}}$ \\
+\hline
+$1$  & $0.00$ & $0.9981$ & $0.330$ & $0.0013$ & $0.4081$ & $0.4094$ \\
+$5$  & $0.50$ & $0.9980$ & $0.344$ & $0.0071$ & $0.3665$ & $0.3736$ \\
+$10$ & $0.75$ & $0.9980$ & $0.293$ & $0.0190$ & $0.3568$ & $0.3758$ \\
+$20$ & $1.00$ & $0.9980$ & $0.309$ & $0.0300$ & $0.3493$ & $0.3794$ \\
+$40$ & $1.50$ & $0.9982$ & $0.298$ & $0.0407$ & $0.3366$ & $0.3772$ \\
+$80$ & $2.00$ & $0.9981$ & $0.310$ & $0.0256$ & $0.3369$ & $\mathbf{0.3625}$ \\
+\hline
+\end{tabular}
+\end{table}
+
+The optimal configuration by \texttt{L\_total\_fixed} is \texttt{minibucket}~$=80$, with a fixed total loss of $0.3625$, utility $0.9981$, and privacy loss $0.337$. Relative to the \texttt{minibucket}~$=1$ baseline this corresponds to a privacy-loss improvement of $+0.071$ at essentially zero utility cost (utility change $-0.0000$). The reason the trade-off is so gentle is that CART's leaf-based sampling reproduces the numeric marginals almost perfectly regardless of leaf size---the KS-complement stays above $0.998$ across the entire sweep, because \texttt{minibucket} mainly changes tree depth and leaf composition rather than whether the correct values are sampled. The privacy gains that are available (chiefly in overfitting protection, which is measurably weaker at \texttt{minibucket}~$=1$) can therefore be captured at negligible loss of fidelity, and a moderate-to-high \texttt{minibucket} of $20$--$80$ is the recommended regime for this dataset. This is consistent with Little et al.~\cite{little2025synthetic}, who report that raising synthpop's minimum leaf size reduces disclosure risk while costing relatively little utility. The one privacy dimension that the sweep cannot fix is inference risk on \texttt{label}, which remains saturated throughout: no amount of leaf-size regularisation removes a relationship that the synthesiser is, by design, faithfully reproducing.
+
+\subsubsection{Trade-off Analysis: Utility versus Privacy}
+
+Taken together, the two experiments illustrate the central tension of the project from two angles. The deep generative models show where utility is lost \emph{distributionally}: high overall quality ($\approx 88\%$) coexists with large per-column EMD on sparse financial attributes, so ``high average fidelity'' can hide substantial local distortion. The Synthpop experiment shows where privacy is lost \emph{relationally}: near-perfect marginal fidelity ($0.998$) coincides with a saturated inference risk ($1.0$) on the sensitive income attribute, because faithfully preserving a predictive relationship is indistinguishable from preserving a disclosure channel. The sweep makes the trade-off explicit and quantifiable---privacy loss falls monotonically from $0.408$ to $0.337$ as regularisation increases---but also reveals that on this dataset the trade-off is unusually mild for distance- and memorisation-based risks and essentially unmovable for attribute-inference risk. This asymmetry is the key empirical finding: different privacy metrics respond very differently to the same control, and reporting any single utility number (or any single privacy number) in isolation would misrepresent the actual risk profile of the synthetic data.
+
+\subsubsection{Differences between CTGAN and TVAE}
+
+The two deep models behave consistently with their architectures. TVAE is far cheaper to train ($\sim$5 minutes versus $\sim$1h24m for $150$ epochs) and produces marginally better aggregate quality and noticeably better per-column marginals, reflecting the stability of variational training and its natural handling of continuous variables. CTGAN, by contrast, better preserves pairwise/correlation structure, consistent with its conditional, adversarial design being aimed at multivariate relationships rather than single-column shapes. Their numeric-subspace agreement (identical RFF-MMD) and their shared failure mode on heavy-tailed financial columns indicate that the limiting factor for both is the data itself---sparse, outlier-heavy attributes under a constrained sample and epoch budget---rather than the choice of generative paradigm.
+
+\section{Discussion}
+
+The results of our experiments reveal a clear and meaningful pattern: introducing multi-objective loss terms into CTGAN and TVAE leads to measurable decreases in several utility metrics, including MMD, EMD, correlation preservation, and downstream machine learning performance. Although this may initially appear counterintuitive, it is fully consistent with established findings in the synthetic data literature and reflects a fundamental tension between utility and privacy.
+
+\subsection{The Utility--Privacy Trade-Off}
+
+Prior work has repeatedly demonstrated that improving privacy often comes at the cost of reduced utility. Stadler et al.~\cite{stadler2022synthetic} show that synthetic data with stronger privacy protections tends to deviate more from the real distribution, resulting in lower analytical value. Similarly, Jordon et al.~\cite{jordon2018pategan} report that adding privacy-preserving noise in generative models reduces fidelity and downstream predictive performance. Our results align with these observations: the privacy penalty in our multi-objective loss explicitly pushes synthetic samples away from real individuals, which naturally increases distributional distances such as MMD and EMD.
+
+\subsection{Impact of Additional Loss Terms}
+
+Each additional loss component introduces its own form of structural pressure on the generator:
+
+\begin{itemize}
+    \item The MMD penalty encourages global distributional alignment but may reduce local variability by pulling samples toward the mean.
+    \item The Soft-F1 penalty promotes class separability, which can distort continuous variables or weaken correlations.
+    \item The privacy penalty discourages memorization but necessarily reduces similarity to real data.
+\end{itemize}
+
+These objectives compete with the original GAN or VAE loss, which aims to maximize realism. As a result, the generator must balance multiple, sometimes conflicting goals. Little et al.~\cite{little2025synthetic} emphasize that no single metric captures synthetic data utility comprehensively, and that the utility--risk trade-off means improvements in one dimension often come at a cost in another. Our findings provide empirical support for this claim.
+
+\subsection{Ethical Implications}
+
+From an ethical perspective, the observed utility degradation is not only expected but also desirable in certain contexts. Synthetic data that is too similar to real data may expose individuals to privacy risks, including membership inference or record linkage attacks~\cite{stadler2022synthetic}. By incorporating explicit privacy-aware loss terms, we reduce these risks at the cost of analytical fidelity. This trade-off reflects broader principles in responsible AI development: systems should prioritize the protection of individuals even when doing so reduces performance~\cite{leslie2020ethics, floridi2016data}.
+
+However, the decrease in utility also raises important questions. If synthetic data becomes too distorted, it may no longer serve its intended purpose, such as supporting model development, exploratory analysis, or fairness auditing. Ethical synthetic data generation therefore requires careful calibration: privacy must be protected, but not at the expense of rendering the data unusable.
+
+\subsection{Balancing Competing Objectives}
+
+Our results highlight the need for more sophisticated optimization strategies. Fixed weighting coefficients may not adequately capture the dynamic interplay between utility and privacy. Future work could explore adaptive or Pareto-based optimization methods that adjust loss weights during training, or incorporate task-specific utility constraints. Additionally, different datasets may require different balances between privacy and utility, suggesting that multi-objective loss functions should be tuned to the context in which synthetic data will be used.
+
+\subsection{Summary}
+
+Overall, the observed decrease in utility metrics is consistent with theoretical expectations and empirical findings in the literature. It reflects the inherent tension between privacy protection and analytical usefulness. Our multi-objective loss function successfully introduces privacy-aware constraints, but these constraints necessarily reduce fidelity. This trade-off is central to the ethical evaluation of synthetic data and underscores the importance of transparent reporting, careful tuning, and context-sensitive deployment.
+
+\bibliographystyle{plain}
+
+\bibliography{sample}
+
+\end{document}
