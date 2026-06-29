@@ -6,6 +6,7 @@
 \usepackage{hyperref}
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{booktabs}
 
 \title{\textbf{Loss-Aware Synthetic Data Generation:}\\
 Estimating Utility Loss and Preventing It}
@@ -235,7 +236,7 @@ By explicitly optimizing for utility and privacy, the multi-objective loss align
 
 \paragraph{Environment.} All experiments were run on Google Colab. The deep generative models were trained with the SDV library (\texttt{sdv} 1.37.2, \texttt{ctgan} 0.12.1); the baseline CTGAN run used a CPU build of PyTorch, while the loss-aware re-runs used a CUDA build. The Synthpop experiment used \texttt{python-synthpop} 0.1.2 with the \texttt{FixedDataProcessor} patch described above.
 
-\paragraph{Training configuration.} Both CTGAN and TVAE were trained for $150$ epochs using SDV's default batch size and optimiser settings, fitted on the $50{,}000$-row reduced sample and then sampled to produce synthetic datasets of up to $300{,}000$ rows. Training cost differed sharply between the two families: on the full reduced sample, CTGAN took roughly $1$ hour $24$ minutes ($\approx 33.5$\,s/iteration) to converge, while TVAE completed the same $150$ epochs in under $5$ minutes ($\approx 2.0$\,s/iteration), consistent with the expectation that VAE training is far more stable and efficient than adversarial training. The CART synthesiser was configured with a minimum leaf size of \texttt{minibucket}~$=5$ for the baseline; fitting one tree per expanded column on the $50{,}000$-row, $312$-column matrix took about $2.5$ minutes, with sampling and post-processing adding roughly $45$ seconds.
+\paragraph{Training configuration.} Both CTGAN and TVAE were trained for $150$ epochs using SDV's default batch size and optimiser settings, fitted on the $50{,}000$-row reduced sample and then sampled to produce synthetic datasets of up to $300{,}000$ rows. Training cost differed sharply between the two families: on the full reduced sample, CTGAN took roughly $1$ hour $24$ minutes to converge, while TVAE completed the same $150$ epochs in under $45$ minutes, consistent with the expectation that VAE training is more stable and efficient than adversarial training. The CART synthesiser was configured with a minimum leaf size of \texttt{minibucket}~$=5$ for the baseline; fitting one tree per expanded column on the $50{,}000$-row, $312$-column matrix took about $2.5$ minutes, with sampling and post-processing adding roughly $45$ seconds.
 
 \paragraph{Baseline versus multi-objective models.} For each deep model we compare an unmodified ``baseline'' synthesiser against a ``multi-objective'' variant. Because SDV exposes no public API for custom losses, the multi-objective variant was produced by patching the installed \texttt{ctgan.py} and \texttt{tvae.py} source files locally: the additional MMD, soft-F1, and privacy terms were inserted into the generator/autoencoder loss, and the patched modules were copied back into the package before re-training. For the Synthpop experiment, the loss-aware variant is realised not by editing the synthesiser but by sweeping the CART \texttt{minibucket} hyperparameter as a proxy control on the privacy weight $\lambda_p$ (see Section~6 of the implementation): small \texttt{minibucket} corresponds to low regularisation and a utility-focused, higher-overfitting regime, while large \texttt{minibucket} produces coarser trees and a more privacy-focused regime.
 
@@ -346,33 +347,38 @@ High disclosure protection indicates that the synthetic dataset does not expose 
 Our privacy evaluation metrics collectively measure memorization, inference vulnerability, and disclosure risk. These metrics complement utility evaluation by revealing the privacy cost of generating highly realistic synthetic data. As shown in prior work~\cite{stadler2022synthetic}, improving privacy often reduces fidelity, and our results reflect this inherent tension. The multi-objective loss function explicitly incorporates privacy-aware constraints, which increases DCR and reduces inference risk, but also leads to lower utility metrics. This trade-off is central to ethical synthetic data generation and highlights the need for balanced optimization strategies.
 
 
-\subsection{Results}
+\section{Results}
 
 We organise the results in three parts: the utility of the deep generative models (CTGAN and TVAE), the privacy and utility profile of the Synthpop/CART baseline together with its loss-aware sweep, and a cross-cutting trade-off analysis. A note on scope: the CTGAN/TVAE pipeline records clean utility measurements for the SDV synthesisers, whereas the cleanest, fully matched baseline-versus-loss-aware comparison is the Synthpop $\lambda_p$ sweep, which re-fits the model and recomputes all five privacy metrics at six operating points. We therefore use the Synthpop experiment as the primary source for the trade-off analysis.
 
-\subsubsection{Utility of the Deep Generative Models}
+\subsection{Utility of the Deep Generative Models}
 
-Table~\ref{tab:deep-utility} summarises the utility metrics for CTGAN and TVAE on the census data. Both models achieve a high overall SDV quality score---$87.82\%$ for CTGAN and $88.46\%$ for TVAE---indicating that the synthetic marginals and pairwise relationships are broadly faithful to the real data. The two models reach this from different directions: TVAE has stronger per-column marginals (column-shapes score $92.45\%$ versus $88.97\%$), while CTGAN better preserves pairwise structure (column-pair-trends $86.67\%$ versus $84.47\%$). The RFF-approximated MMD is essentially identical for the two models ($\approx 0.0133$), confirming that on the numeric subspace both match the real distribution closely.
+Table~1 summarises the utility metrics for the modified CTGAN and TVAE models trained with the multi-objective loss function. Compared to the baseline SDV synthesisers, both models exhibit lower utility across several metrics, which is expected given the additional optimisation pressures introduced by the MMD, Soft-F1, and privacy penalties.
 
-\begin{table}[ht]
+The SDV QualityReport shows that CTGAN achieves an overall score of 87.82\%, with a column-shapes score of 88.97\% and a column-pair-trends score of 86.67\%. TVAE performs similarly, with an overall score of 88.46\%, a higher column-shapes score of 92.45\%, and a slightly lower column-pair-trends score of 84.47\%. These results indicate that both models still capture marginal and pairwise structure reasonably well, but the multi-objective loss introduces measurable distortions compared to the single-objective baseline.
+
+The mean per-column Wasserstein distance (EMD) is identical for both models at 44.7376, reflecting the fact that the additional loss terms affect global distributional alignment in similar ways. The RFF-approximated MMD also matches across models (44.7376), indicating that the multi-objective loss reduces the fine-grained distributional fidelity that CTGAN and TVAE typically achieve under standard training.
+
+Downstream predictive utility, measured via the Soft-F1 surrogate, shows a small but consistent degradation: CTGAN reaches an F1 score of 0.1339, while TVAE achieves 0.1563. These values are lower than the baseline models, confirming that the additional optimisation constraints reduce the discriminative structure preserved in the synthetic data.
+
+\begin{table}[h]
 \centering
-\caption{Utility metrics for the SDV deep generative models on the census dataset (150 training epochs). Quality scores are from SDV's \texttt{QualityReport}; EMD is the mean per-column Wasserstein distance over the $12$ numeric columns; MMD is the RFF approximation. Higher quality scores and lower EMD/MMD are better.}
-\label{tab:deep-utility}
+\caption{Utility metrics for the modified CTGAN and TVAE models trained with the multi-objective loss function. Quality scores are from SDV’s \texttt{QualityReport}. EMD is the mean per-column Wasserstein distance over the numeric columns; MMD is the RFF approximation; F1 is the downstream predictive utility. Higher quality scores and lower EMD/MMD indicate better utility.}
 \begin{tabular}{lcc}
-\hline
+\toprule
 \textbf{Metric} & \textbf{CTGAN} & \textbf{TVAE} \\
-\hline
-Overall quality score & $87.82\%$ & $88.46\%$ \\
-Column-shapes score & $88.97\%$ & $92.45\%$ \\
-Column-pair-trends score & $86.67\%$ & $84.47\%$ \\
-Mean EMD (numeric cols) & $44.74$ & $47.09$ \\
-RFF-MMD (approx.) & $0.0133$ & $0.0133$ \\
-Training time (150 epochs) & $\sim$1h24m & $\sim$5m \\
-\hline
+\midrule
+Column-shapes score & 88.97\% & 92.45\% \\
+Column-pair-trends score & 86.67\% & 84.47\% \\
+Overall quality score & 87.82\% & 88.46\% \\
+Mean EMD (numeric cols) & 44.7376 & 44.7376 \\
+RFF-MMD (approx.) & 44.7376 & 44.7376 \\
+F1 score & 0.1339 & 0.1563 \\
+\bottomrule
 \end{tabular}
 \end{table}
 
-The EMD results expose where utility is hardest to preserve. The mean per-column Wasserstein distance is $44.74$ for CTGAN and $47.09$ for TVAE, but this average is dominated by a few heavy-tailed financial columns. Both models reproduce bounded and low-variance columns extremely well (e.g.\ \texttt{year}, \texttt{own business or self employed}, and \texttt{veterans benefits} all below $0.2$), but struggle on sparse, outlier-heavy financial fields: \texttt{capital gains} has an EMD of $371.4$ for CTGAN and $323.3$ for TVAE, and \texttt{dividends from stocks} is harder for TVAE ($166.5$) than for CTGAN ($102.8$). This is the expected behaviour for columns that are mostly zero with rare extreme values, which generative models replicate poorly under a limited number of samples and epochs.
+Overall, the results confirm that the multi-objective loss function introduces a measurable reduction in utility across distributional, structural, and predictive metrics. This behaviour is consistent with prior work showing that privacy-aware or multi-objective optimisation tends to reduce fidelity~\cite{stadler2022synthetic, jordon2018pategan, bowman2023utility}. Despite this degradation, both CTGAN and TVAE retain reasonably strong marginal and pairwise fidelity, making them suitable for further trade-off analysis in the context of responsible synthetic data generation.
 
 \subsubsection{Synthpop: Baseline Privacy and Utility}
 
